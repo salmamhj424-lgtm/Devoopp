@@ -1,0 +1,63 @@
+// Jenkins Declarative Pipeline — Windows agent + Docker Desktop + Node.js.
+// Use as Script Path in a Jenkins Multibranch Pipeline configured for: push dev.
+pipeline {
+  agent any
+  options { skipDefaultCheckout(true); timestamps(); disableConcurrentBuilds() }
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+    stage('Setup') {
+      steps {
+        bat 'node --version && npm --version && docker --version && docker compose version'
+        bat 'if not exist artifacts mkdir artifacts'
+      }
+    }
+    stage('Build') {
+      steps {
+        bat 'npm test > artifacts\\tests.log 2>&1'
+        bat 'type artifacts\\tests.log'
+        bat 'npm run build > artifacts\\build.log 2>&1'
+        bat 'type artifacts\\build.log'
+      }
+    }
+    stage('Tests parallèles Node 20 et 22') {
+      parallel {
+        stage('Node 20') { steps { bat 'docker run --rm -v "%CD%:/app" -w /app node:20-alpine npm test' } }
+        stage('Node 22') { steps { bat 'docker run --rm -v "%CD%:/app" -w /app node:22-alpine npm test' } }
+      }
+    }
+    stage('Run (Docker)') {
+      steps {
+        bat 'docker compose down --remove-orphans'
+        bat 'docker compose up -d --build'
+        bat 'docker compose ps > artifacts\\docker-status.txt'
+      }
+    }
+    stage('Smoke Test') {
+      steps {
+        bat 'npm run smoke > artifacts\\smoke-build.log 2>&1'
+        bat 'docker compose exec -T web wget -q -O - http://127.0.0.1/health > artifacts\\smoke-http.txt'
+        bat 'findstr /C:"ok" artifacts\\smoke-http.txt'
+        bat 'docker compose exec -T web wget -q -O - http://127.0.0.1/ > artifacts\\smoke-page.html'
+        bat 'findstr /C:"QuizFlow" artifacts\\smoke-page.html'
+      }
+    }
+    stage('Archive Artifacts') {
+      steps {
+        bat 'node scripts/prepare-artifacts.js'
+        bat 'docker image ls quizflow > artifacts\docker-images.txt'
+        archiveArtifacts artifacts: 'artifacts/**/*,dist/**/*', allowEmptyArchive: true
+      }
+    }
+  }
+  post {
+    always {
+      bat(returnStatus: true, script: 'docker compose logs --no-color > artifacts\\container.log 2>&1')
+      archiveArtifacts artifacts: 'artifacts/**/*,dist/**/*', allowEmptyArchive: true
+      bat(returnStatus: true, script: 'docker compose down --remove-orphans')
+    }
+    success { echo 'PASSED — push dev' }
+    failure { echo 'FAILED — consulter les logs Jenkins et les artefacts.' }
+  }
+}

@@ -1,0 +1,10 @@
+.git
+.github
+jenkins
+node_modules
+dist
+artifacts
+*.zip
+README.md
+docs
+coverage
